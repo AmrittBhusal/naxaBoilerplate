@@ -1,0 +1,32 @@
+name: Run Command
+
+on:
+  workflow_dispatch:
+    inputs:
+      command_to_run:
+        description: "Enter any command to run on server"
+        required: true
+
+jobs:
+  run_command:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 400 ~/.ssh/id_rsa
+          ssh-keyscan ${{ secrets.SERVER_IP }} >> ~/.ssh/known_hosts
+
+      - name: SSH Connection
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: ${{ secrets.SERVER_USERNAME }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: 22
+          script: |
+            echo "Connected to remote server via SSH"
+            echo 'Running SSH command on remote server...'
+            cd /srv/Projects/NAXA-Boilerplate-Test/gitOps_boiler
+            ${{ github.event.inputs.command_to_run }}

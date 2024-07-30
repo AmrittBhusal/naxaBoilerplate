@@ -1,0 +1,173 @@
+version: "3"
+
+services:
+  web:
+    env_file:
+      - .env
+    build:
+      context: .
+      dockerfile: ./docker/Dockerfile
+    restart: unless-stopped
+    volumes:
+      - .:/code
+    depends_on:
+      - db
+      - minio
+    # ports:
+    #   - ${WEB_APP_PORT}:8000
+    command: ["python3", "manage.py", "runserver", "0.0.0.0:8000"]
+    deploy:
+      mode: replicated
+      replicas: 1
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "curl",
+          "-I",
+          "--fail",
+          "http://`hostname --ip-address`:8000/admin/login/",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks:
+      - nw
+
+  db:
+    image: mdillon/postgis:11-alpine
+    restart: unless-stopped
+    volumes:
+      - ./DockerData/postgres_data:/var/lib/postgresql/data/
+    # ports:
+    #   - 5432:5432
+    env_file:
+      - .env
+    networks:
+      - nw
+
+  minio:
+    image: "docker.io/minio/minio:${MINIO_TAG:-RELEASE.2023-10-25T06-33-25Z}"
+    restart: unless-stopped
+    command: server /export --console-address :9090 --address :9000
+    volumes:
+      - ./DockerData/minio_data:/export
+    env_file:
+      - .env
+    # ports:
+    #   - 9000:9000
+    #   - 9090:9090
+    networks:
+      - nw
+
+  redis:
+    image: redis:alpine
+    restart: unless-stopped
+    entrypoint: redis-server --appendonly yes
+    # ports:
+    #   - 6379:6379
+    volumes:
+      - ./DockerData/redis_data:/var/lib/redis
+    networks:
+      - nw
+
+  worker:
+    build:
+      context: .
+      dockerfile: ./docker/Dockerfile
+    restart: unless-stopped
+    entrypoint: "celery -A project worker -l DEBUG"
+    depends_on:
+      - web
+      - redis
+    volumes:
+      - .:/code
+    env_file:
+      - .env
+    networks:
+      - nw
+
+  beat:
+    build:
+      context: .
+      dockerfile: ./docker/Dockerfile
+    restart: unless-stopped
+    entrypoint: "celery -A project beat -l DEBUG"
+    depends_on:
+      - web
+      - redis
+    volumes:
+      - .:/code
+    env_file:
+      - .env
+    networks:
+      - nw
+
+  fastapi:
+    env_file:
+      - .env
+    build:
+      context: .
+      dockerfile: ./docker/Dockerfile
+    restart: unless-stopped
+    volumes:
+      - .:/code
+    depends_on:
+      - db
+      - mongo
+      - minio
+    # ports:
+    #   - ${FASTAPI_APP_PORT}:8000
+    entrypoint: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+    networks:
+      - nw
+
+  mongo:
+    image: mongo:6.0.2
+    restart: unless-stopped
+    volumes:
+      - ./DockerData/mongodb_data:/data/db
+    # ports:
+    #   - 27017:27017
+    env_file:
+      - .env
+    networks:
+      - nw
+
+  createbuckets:
+    image: "docker.io/minio/minio:${MINIO_TAG:-RELEASE.2023-10-25T06-33-25Z}"
+    entrypoint: >
+      /bin/sh -c "mc config host add minio http://${MINIO_PUBLIC_SERVERNAME:-internal.minio.redirect} \$MINIO_ACCESS_KEY \$MINIO_SECRET_KEY; mc mb minio/\$MINIO_BUCKET_NAME; mc anonymous set download minio/\$MINIO_BUCKET_NAME/publicuploads/; exit 0;"
+    env_file:
+      - .env
+    depends_on:
+      - minio
+    networks:
+      - nw
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - ${NGINX_EXPOSE_PORT:-80}:80
+    depends_on:
+      - web
+      - fastapi
+      - minio
+    env_file:
+      - .env
+    environment:
+      - MINIO_SERVERNAME=${MINIO_PUBLIC_SERVERNAME:-internal.minio.redirect} # edit this only if minio exposed to internet in separate domain is used
+    volumes:
+      - ./nginx:/etc/nginx/templates
+    networks:
+      nw:
+        aliases:
+          - ${DJANGO_SERVERNAME}
+          - internal.minio.redirect
+    extra_hosts:
+      - "internal.minio.redirect:127.0.0.1"
+
+networks:
+  nw:
+    driver: bridge

@@ -1,0 +1,174 @@
+name: NAXA Boilerplate CICD
+
+on:
+  push:
+    branches:
+      - develop
+      - staging
+      - master
+  workflow_dispatch:
+
+env:
+  AWS_REGION: ap-south-1
+  ECR_REGISTRY: 685797548389.dkr.ecr.ap-south-1.amazonaws.com
+  ECR_REPOSITORY: naxa-backend-boilerplate
+
+jobs:
+  build:
+    name: Build Docker image
+    runs-on: self-hosted
+    outputs:
+      branch: ${{ steps.extract_branch.outputs.branch }}
+    steps:
+      - name: Extract branch name
+        shell: bash
+        run: echo "branch=${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}" >> $GITHUB_OUTPUT
+        id: extract_branch
+
+      - name: Clone repository
+        uses: actions/checkout@v3
+        with:
+          ref: ${{ steps.extract_branch.outputs.branch }}
+
+      - name: Create Dependencies
+        run: |
+          cp ./dependencies/apt_requirements_gis.txt apt_requirements.txt
+          cp ./dependencies/requirements_gis.txt requirements.txt
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.NAXA_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.NAXA_AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Build and Push Docker Image
+        id: build-image
+        run: |
+          docker build -f ./docker/Dockerfile -t ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ steps.extract_branch.outputs.branch }} .
+          docker push ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ steps.extract_branch.outputs.branch }}
+
+      - name: Image Digest
+        run: echo ImageDigest:${{ steps.build-image.outputs.imageDigest }}
+
+  test:
+    name: Test Docker image web app
+    needs:
+      - build
+    runs-on: self-hosted
+    services:
+      postgres:
+        image: mdillon/postgis:11-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432/tcp
+        options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.NAXA_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.NAXA_AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Pull Docker Image
+        id: pull-image
+        run: |
+          docker pull ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ needs.build.outputs.branch }}
+
+      - name: Run Docker web container
+        id: run-web-container
+        run: |
+          export IP_ADDR=`ip a | grep eth1 | grep inet | awk {'print $2'} | cut -d '/' -f1`
+          docker run -it -d --rm --name ${{ env.ECR_REPOSITORY }}-test-${{ github.run_id }}-${{ github.run_attempt }} --entrypoint=/usr/local/bin/uwsgi -e POSTGRES_HOST=$IP_ADDR -e POSTGRES_PORT=${{ job.services.postgres.ports[5432] }} ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ needs.build.outputs.branch }} --ini uwsgi/uwsgi.sample.ini
+
+      - name: Run django tests
+        id: django-tests
+        run: |
+          docker exec -i ${{ env.ECR_REPOSITORY }}-test-${{ github.run_id }}-${{ github.run_attempt }} python3 manage.py migrate
+          docker exec -i ${{ env.ECR_REPOSITORY }}-test-${{ github.run_id }}-${{ github.run_attempt }} python3 manage.py test
+
+      - name: Curl to test reachability of web app
+        id: test-reachability
+        run: |
+          docker exec ${{ env.ECR_REPOSITORY }}-test-${{ github.run_id }}-${{ github.run_attempt }} curl -I localhost:8000 || exit 1
+
+      - name: Container Cleanup
+        if: always()
+        id: clean-container
+        run: |
+          docker stop ${{ env.ECR_REPOSITORY }}-test-${{ github.run_id }}-${{ github.run_attempt }} || exit 0
+
+  deploy:
+    name: Deploy image
+    needs:
+      - build
+      - test
+    runs-on: self-hosted
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Get VM SSH host and user
+        id: get_vm_conf
+        run: |
+          case "${{ github.ref }}" in
+          refs/heads/develop)
+            export SERVER_IP=167.71.229.214
+            export SERVER_USERNAME=devops
+            ;;
+          refs/heads/staging)
+            export SERVER_IP=167.71.229.214
+            export SERVER_USERNAME=devops
+            ;;
+          refs/heads/master)
+            export SERVER_IP=167.71.229.214
+            export SERVER_USERNAME=devops
+            ;;
+          esac
+          echo "SERVER_IP=${SERVER_IP}" >> $GITHUB_OUTPUT
+          echo "SERVER_USERNAME=${SERVER_USERNAME}" >> $GITHUB_OUTPUT
+
+      - name: Configure SSH key
+        run: |
+          mkdir -p ~/.ssh
+          touch ~/.ssh/id_rsa
+          chmod 666 ~/.ssh/id_rsa
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 400 ~/.ssh/id_rsa
+          ssh-keyscan ${{ steps.get_vm_conf.outputs.SERVER_IP }} >> ~/.ssh/known_hosts
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.NAXA_AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.NAXA_AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Copy Env File from S3
+        run: |
+          aws s3 cp s3://naxa-project-envs/${{ github.event.repository.name }}/backend/${{ needs.build.outputs.branch }}/.env .env
+
+      - name: Deploy to Server
+        run: |
+          cp ./docker/server/docker-compose.${{ needs.build.outputs.branch }}.yml docker-compose.yml
+          docker compose --file docker-compose.yml pull
+          docker compose --file docker-compose.yml up --detach
+        env:
+          DOCKER_HOST: ssh://${{ steps.get_vm_conf.outputs.SERVER_USERNAME }}@${{ steps.get_vm_conf.outputs.SERVER_IP }}

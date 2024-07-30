@@ -1,0 +1,8 @@
+curl
+binutils
+libproj-dev
+gettext
+gdal-bin
+libgdal-dev
+libc-dev
+python-dev

@@ -1,0 +1,185 @@
+version: "3"
+
+services:
+  web:
+    image: ${ECR_REPOSITORY_URL}:${IMAGE_TAG}
+    restart: always
+    volumes:
+      - $PROJECT_DIR/logs/:/logs/
+    command: ["uwsgi", "--ini", "uwsgi/uwsgi.${COMPOSE_PROJECT_NAME}.ini"]
+    env_file:
+      - .env
+    depends_on:
+      - db
+    networks:
+      - nw
+    deploy:
+      mode: replicated
+      replicas: 1
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "curl",
+          "-I",
+          "--fail",
+          "http://`hostname --ip-address`:8000/admin/login/",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  db:
+    image: mdillon/postgis:11-alpine
+    restart: always
+    volumes:
+      - $PROJECT_DIR/DockerData/postgres_data:/var/lib/postgresql/data/
+    env_file:
+      - .env
+    networks:
+      - nw
+    deploy:
+      resources:
+        limits:
+          cpus: "0.2"
+          memory: "200M"
+
+  minio:
+    image: "docker.io/minio/minio:${MINIO_TAG:-RELEASE.2023-10-25T06-33-25Z}"
+    restart: always
+    command: server /export --console-address ":9090" --address ":9000"
+    volumes:
+      - $PROJECT_DIR/DockerData/minio_data:/export
+    env_file:
+      - .env
+    networks:
+      - nw
+    deploy:
+      resources:
+        limits:
+          cpus: "0.4"
+          memory: "400M"
+
+  fastapi:
+    env_file:
+      - .env
+    image: ${ECR_REPOSITORY_URL}:${IMAGE_TAG}
+    restart: always
+    volumes:
+      - $PROJECT_DIR/logs/:/logs/
+    depends_on:
+      - db
+      - mongo
+    entrypoint: ["sh", "/code/docker/fastapi.sh"]
+    networks:
+      - nw
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: "500M"
+
+  mongo:
+    image: mongo:6.0.2
+    restart: always
+    volumes:
+      - $PROJECT_DIR/DockerData/mongodb_data:/data/db
+    env_file:
+      - .env
+    networks:
+      - nw
+    deploy:
+      resources:
+        limits:
+          cpus: "0.3"
+          memory: "300M"
+
+  redis:
+    image: redis:alpine
+    restart: always
+    entrypoint: redis-server --appendonly yes
+    volumes:
+      - $PROJECT_DIR/DockerData/_redis_data:/var/lib/redis
+    networks:
+      - nw
+    deploy:
+      resources:
+        limits:
+          cpus: "0.2"
+          memory: "200M"
+
+  worker:
+    image: ${ECR_REPOSITORY_URL}:${IMAGE_TAG}
+    restart: always
+    entrypoint: "celery -A project worker -f /logs/worker.log -l DEBUG"
+    depends_on:
+      - web
+      - redis
+    volumes:
+      - $PROJECT_DIR/logs/:/logs/
+    env_file:
+      - .env
+    networks:
+      - nw
+    deploy:
+      resources:
+        limits:
+          cpus: "0.3"
+          memory: "250M"
+
+  beat:
+    image: ${ECR_REPOSITORY_URL}:${IMAGE_TAG}
+    restart: always
+    entrypoint: "celery -A project beat -f /logs/beat.log -l DEBUG"
+    depends_on:
+      - web
+      - redis
+    volumes:
+      - $PROJECT_DIR/logs/:/logs/
+    env_file:
+      - .env
+    networks:
+      - nw
+    deploy:
+      resources:
+        limits:
+          cpus: "0.3"
+          memory: "250M"
+
+  createbuckets:
+    image: "docker.io/minio/minio:${MINIO_TAG:-RELEASE.2023-10-25T06-33-25Z}"
+    entrypoint: >
+      /bin/sh -c "mc config host add minio http://${MINIO_PUBLIC_SERVERNAME:-internal.minio.redirect} \$MINIO_ACCESS_KEY \$MINIO_SECRET_KEY; mc mb minio/\$MINIO_BUCKET_NAME; mc anonymous set download minio/\$MINIO_BUCKET_NAME/publicuploads/; exit 0;"
+    env_file:
+      - .env
+    depends_on:
+      - minio
+    networks:
+      - nw
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - ${NGINX_EXPOSE_PORT:-80}:80
+    depends_on:
+      - web
+      - fastapi
+      - minio
+    env_file:
+      - .env
+    environment:
+      - MINIO_SERVERNAME=${MINIO_PUBLIC_SERVERNAME:-internal.minio.redirect} # edit this only if minio exposed to internet in separate domain is used
+    volumes:
+      - $PROJECT_DIR/nginx:/etc/nginx/templates
+    networks:
+      nw:
+        aliases:
+          - ${DJANGO_SERVERNAME}
+          - internal.minio.redirect
+    extra_hosts:
+      - "internal.minio.redirect:127.0.0.1"
+
+networks:
+  nw:
+    driver: bridge

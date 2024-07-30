@@ -1,0 +1,69 @@
+# Change env_sample to .env or env_sample (or as mentioned in docker-compose.yml)
+# COPY ENV IN FOLLOWING FORMAT
+# aws s3 cp .env s3://naxa-project-envs/naxa-backend-boilerplate/backend/gitOps/.env
+
+# =======================DEVOPS SECTION==============================#
+PROJECT_DIR=/srv/Projects/NAXA-Boilerplate-Test/master
+COMPOSE_PROJECT_NAME=boilerplate_master_test
+IMAGE_TAG=master
+WEB_APP_PORT=9012
+FASTAPI_APP_PORT=9013
+NGINX_EXPOSE_PORT=80
+DJANGO_SERVERNAME=django.localhost
+FASTAPI_APP_URL_PREFIX=fastapi
+MINIO_PUBLIC_SERVERNAME=
+# ===================================================================#
+
+# =======================DATABASE SECTION==============================#
+POSTGRES_USER=postgres
+POSTGRES_DB=${COMPOSE_PROJECT_NAME}-db
+POSTGRES_PASSWORD=postgres
+
+MONGO_INITDB_ROOT_USERNAME=root
+MONGO_INITDB_ROOT_PASSWORD=root
+# ========================================================================#
+
+# =======================OBJECT STORAGE SECTION==============================#
+OBJECT_STORAGE="MINIO" # MUST be among ["MINIO", "S3", None]
+MINIO_ACCESS_KEY=${PUT_MINIO_ACCESS_KEY:-root}
+MINIO_SECRET_KEY=${PUT_MINIO_SECRET_KEY:-unsafeminiopass}
+MINIO_BUCKET_NAME=obj-storage
+# USE PUBLIC URL IF MINIO EXPOSED TO INTERNET
+MINIO_ENDPOINT=http://${MINIO_PUBLIC_SERVERNAME:-internal.minio.redirect}
+
+# Change if using AWS S3
+AWS_REGION=""
+AWS_ACCESS_KEY_ID=
+AWS_SECRET_ACCESS_KEY=
+AWS_STORAGE_BUCKET_NAME=
+
+# for minio only ===>
+# USE PUBLIC URL IF MINIO EXPOSED TO INTERNET
+MINIO_SERVER_URL=http://${MINIO_PUBLIC_SERVERNAME:-internal.minio.redirect}
+MINIO_CONSOLE_PATH_PREFIX=obj-storage-console
+MINIO_BROWSER_REDIRECT_URL=http://${MINIO_PUBLIC_SERVERNAME:-${DJANGO_SERVERNAME}}/${MINIO_CONSOLE_PATH_PREFIX}
+FILE_SIZE_LIMIT=52428800
+# ========================================================================#
+
+# ==============================DJANGO SETTINGS MODULE=====================================#
+DEBUG=True
+SECRET_KEY=xyggedefsdfsdf-+5g3vYi0+s^*3y-${COMPOSE_PROJECT_NAME}-HASHKEY
+
+CSRF_TRUSTED_ORIGINS=https://*.naxa.com.np
+SITE_ID=1
+
+SQL_ENGINE=django.contrib.gis.db.backends.postgis
+DEFAULT_AUTO_FIELD=django.db.models.AutoField
+DJANGO_SETTINGS_MODULE=project.settings
+
+POSTGRES_HOST=db
+POSTGRES_PORT=5432
+
+MONGO_USERNAME=root
+MONGO_PASSWORD=root
+MONGO_HOST=mongo
+MONGO_PORT=27017
+
+EMAIL_HOST_USER=naxasmtptest@gmail.com
+EMAIL_HOST_PASSWORD=REPLACEMEIWONTWORK
+# ==========================================================================================#

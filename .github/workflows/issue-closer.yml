@@ -1,0 +1,22 @@
+name: Auto Issue Closer
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_prompt:
+        description: Do you want to trigger workflow ?
+        type: choice
+        options:
+          - true
+          - false
+
+jobs:
+  issue-closer:
+    runs-on: ubuntu-latest
+    if: ${{ github.action.inputs.build_prompt }} == true
+    steps:
+      - uses: nischalstha9/issue-closer@master
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }} #github secret token
+          repo: "naxa-developers/naxa-backend-boilerplate" #repo name
+          base_branch: "develop" #repo base_branch
